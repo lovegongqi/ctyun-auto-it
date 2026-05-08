@@ -2,7 +2,9 @@
 云电脑首页登录脚本。
 """
 
+import argparse
 import atexit  # 新增导入 atexit 模块
+import calendar
 import datetime
 import json
 import os
@@ -23,6 +25,15 @@ LOGIN_URL = "https://pc.ctyun.cn/#/login"
 DESKTOP_URL = "https://pc.ctyun.cn/#/desktop-list"
 DESKTOP_DETAIL_URL_KEY = "/desktop?id="
 HANG_SECONDS = 80 * 60
+REWARD_LIST_URL = (
+    "https://desk.ctyun.cn/selforder/api/selforder/prod/get"
+    "?prodId=17000000&prodCode=POINTS"
+)
+PLACE_ORDER_URL = "https://desk.ctyun.cn/selforder/api/selforder/paas/placeOrder"
+POINTS_TASK_LIST_URL = (
+    "https://desk.ctyun.cn/selforder/api/marketing/userPoints/getTaskList"
+)
+RESTART_AT_FILE = "/tmp/ctyun_restart_at"
 
 
 def init_browser_options(running_in_docker: bool) -> ChromiumOptions:
@@ -347,7 +358,7 @@ def wait_desktop_opened(page: ChromiumPage, timeout: int = 270) -> bool:
     return False
 
 
-def open_points_center_and_print(page: ChromiumPage, timeout: int = 60) -> None:
+def open_points_center_and_print(page: ChromiumPage, timeout: int = 60) -> int:
     """打开积分中心并输出积分详情。"""
     try:
         locator = "xpath://span[contains(string(), '积分中心')]"
@@ -355,12 +366,12 @@ def open_points_center_and_print(page: ChromiumPage, timeout: int = 60) -> None:
 
         if not target_element:
             print("\r[-] 未找到积分中心入口。")
-            return
+            return 0
 
         clicked = target_element.click(by_js=True)
         if not clicked:
             print("\r[-] 积分中心入口点击失败。")
-            return
+            return 0
         time.sleep(5)
         end_time = time.time() + timeout
         while time.time() < end_time:
@@ -371,12 +382,12 @@ def open_points_center_and_print(page: ChromiumPage, timeout: int = 60) -> None:
         iframe_ele = page.ele('css:iframe[src*="points.html"]', timeout=30)
         if not iframe_ele:
             print("\r[-] 未找到积分中心 iframe。")
-            return
+            return 0
 
         frame = page.get_frame(iframe_ele)
         if not frame:
             print("\r[-] 无法切换到积分中心 iframe。")
-            return
+            return 0
 
         time.sleep(5)
         general_points = ""
@@ -406,15 +417,21 @@ def open_points_center_and_print(page: ChromiumPage, timeout: int = 60) -> None:
 
         if not general_points:
             print("\r[-] 未读取到通用积分。")
-            return
+            return 0
 
         print(f"\r[*] 目前积分: {general_points}")
+        return int(general_points)
     except Exception as e:
         print(f"[-] 无法获取积分中心数据：{e}")
+        return 0
 
 
 def wait_for_points_with_points(
-    page: ChromiumPage, total_seconds: int = HANG_SECONDS, step: int = 10
+    page: ChromiumPage,
+    total_seconds: int = HANG_SECONDS,
+    step: int = 10,
+    running_in_docker: bool = False,
+    config_redeem_only: bool = False,
 ) -> None:
     """进入云电脑后挂机等待积分，结束前打印积分详情。"""
     print("[*] 已进入云电脑")
@@ -426,10 +443,11 @@ def wait_for_points_with_points(
     packet_retry_count = 0
     refresh_retry_count = 0
     last_progress_update_time = time.time()
+    redeem_config_checked = False
     url = "https://desk.ctyun.cn/selforder/api/marketing/userPoints/getTaskList"
     # 初始状态开启监听和界面
     page.listen.start(url)
-    open_points_center_and_print(page)
+    current_points = open_points_center_and_print(page)
     packet = page.listen.wait(timeout=20)
     while remaining > 0:
         # 开始挂机，获取积分中心数据，然后无限循环，并获取网络数据包判断是否完成挂机
@@ -448,13 +466,34 @@ def wait_for_points_with_points(
             page.refresh()
             time.sleep(5)
             page.listen.start(url)
-            open_points_center_and_print(page)
+            current_points = open_points_center_and_print(page)
             packet = page.listen.wait(timeout=20)
             continue
 
         # 成功捕获到包，清零数据包重试计数器
         packet_retry_count = 0
         headers = packet.request.headers
+
+        if not redeem_config_checked:
+            config = ensure_redeem_config(
+                page, clean_headers(headers), running_in_docker, config_redeem_only
+            )
+            redeem_config_checked = True
+            enabled = config.get("enabled")
+
+            if config_redeem_only:
+                if not config or "enabled" not in config:
+                    print("[!] 未完成兑换配置。")
+                    sys.exit(1)
+                print("[*] 兑换配置检查完成。")
+                print("[*] 兑换配置流程结束。")
+                sys.exit(0)
+
+            if not enabled:
+                print("[*] 自动兑换配置已禁用，继续执行挂机任务 。\n")
+            else:
+                print("[*] 已开启积分兑换，继续执行挂机任务 。\n")
+
         current_progress = fetch_current_progress(url, headers)
 
         if current_progress is not None and current_progress > 0:
@@ -472,6 +511,9 @@ def wait_for_points_with_points(
             # 3600 代表任务完成
             if current_progress >= 3600:
                 print(f"\r[-] {current_time_str} 挂机任务完成。")
+                auto_redeem_reward_after_hang(
+                    page, headers, running_in_docker, current_points
+                )
                 sys.exit(0)
 
         time_since_last_update = time.time() - last_progress_update_time
@@ -508,9 +550,7 @@ def fetch_current_progress(url: str, headers: Dict[str, str]) -> int:
         Optional[Any]: 成功提取到进度值则返回该值；如果请求失败或数据不存在则返回 None。
     """
     try:
-        for k in list(headers.keys()):
-            if str(k).startswith(":"):
-                del headers[k]
+        headers = clean_headers(headers)
 
         response = requests.get(url, headers=headers, timeout=10)
 
@@ -528,6 +568,449 @@ def fetch_current_progress(url: str, headers: Dict[str, str]) -> int:
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{current_time}] 获取或解析数据失败: {error}")
         return 0
+
+
+def get_redeem_config_path(running_in_docker: bool) -> str:
+    """兑换配置路径，仅保存容器内。"""
+    if running_in_docker:
+        return "/app/redeem_config.json"
+    return "./redeem_config.json"
+
+
+def load_redeem_config(path: str) -> dict:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        print(f"[!] 读取兑换配置失败: {e}")
+        return {}
+
+
+def save_redeem_config(path: str, config: dict) -> None:
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        print(f"[*] 兑换配置已保存: {path}")
+    except Exception as e:
+        print(f"[!] 保存兑换配置失败: {e}")
+
+
+def clean_headers(headers: Dict[str, str]) -> Dict[str, str]:
+    clean = {}
+    for k, v in dict(headers).items():
+        if not str(k).startswith(":"):
+            clean[str(k)] = v
+    return clean
+
+
+def parse_general_points(points_text: str) -> int:
+    digits = "".join(ch for ch in str(points_text) if ch.isdigit())
+    return int(digits) if digits else 0
+
+
+def parse_desktops_from_session(page: ChromiumPage) -> list[dict]:
+    raw = page.run_js("return sessionStorage.getItem('desktops');")
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def fetch_redeemable_rewards(headers: Dict[str, str]) -> list[dict]:
+    try:
+        response = requests.get(REWARD_LIST_URL, headers=headers, timeout=15)
+        response.raise_for_status()
+        result = response.json()
+    except Exception as e:
+        print(f"[!] 获取兑换奖励列表失败: {e}")
+        return []
+
+    if result.get("code") == 40010:
+        print("[!] 当前登录信息已过期，请重新登录后再试兑换。")
+        return []
+
+    rewards: list[dict] = []
+    for mall in result.get("data", []):
+        for series in mall.get("series", []):
+            if series.get("expireDate") is not None:
+                continue
+            for sku in series.get("sku", []):
+                if sku.get("expireDate") is not None:
+                    continue
+                prod_id = int(sku.get("prodId", 0))
+                prod_name = str(sku.get("prodName", "")).strip()
+                cost_points = int(sku.get("costPoints", 0))
+                description = str(sku.get("description", "")).strip()
+                prod_type = str(sku.get("prodType", "")).strip()
+                rewards.append(
+                    {
+                        "prodId": prod_id,
+                        "prodName": prod_name,
+                        "costPoints": cost_points,
+                        "description": description,
+                        "prodType": prod_type,
+                    }
+                )
+    return rewards
+
+
+def _input_index(max_index: int, prompt: str) -> int:
+    while True:
+        raw = input(prompt).strip()
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= max_index:
+                return idx - 1
+        print(f"[-] 请输入 1 到 {max_index} 的数字。")
+
+
+def _input_non_negative_int(prompt: str, default_value: int) -> int:
+    while True:
+        raw = input(prompt).strip()
+        if raw == "":
+            return default_value
+        if raw.isdigit():
+            return int(raw)
+        print("[-] 请输入大于等于 0 的整数。")
+
+
+def _input_positive_int(prompt: str, default_value: int) -> int:
+    while True:
+        raw = input(prompt).strip()
+        if raw == "":
+            return default_value
+        if raw.isdigit() and int(raw) > 0:
+            return int(raw)
+        print("[-] 请输入大于 0 的整数。")
+
+
+def _input_month_days(prompt: str) -> list[int]:
+    while True:
+        raw = input(prompt).strip()
+        if raw == "":
+            print("[-] 不能为空，请输入如 1,15,28 或 -1")
+            continue
+        values = []
+        valid = True
+        for item in raw.split(","):
+            item = item.strip()
+            if item == "-1":
+                values.append(-1)
+                continue
+            if not item.isdigit():
+                valid = False
+                break
+            day = int(item)
+            if day < 1 or day > 31:
+                valid = False
+                break
+            values.append(day)
+        if not valid or not values:
+            print("[-] 格式错误，请输入 1-31 或 -1，并用逗号分隔，如 1,15,28,-1")
+            continue
+        return sorted(set(values))
+
+
+def prompt_redeem_schedule() -> dict:
+    print("\n兑换时间设置：")
+    print("1. 每日兑换（默认）")
+    print("2. 每隔N日兑换")
+    print("3. 每月几号兑换（逗号分隔，支持 -1 表示月末最后一天）")
+    while True:
+        choice = input("请选择时间策略 [1/2/3，默认1]: ").strip()
+        if choice in ("", "1"):
+            return {"scheduleType": "daily"}
+        if choice == "2":
+            interval_days = _input_positive_int("请输入间隔天数N [默认1]: ", 1)
+            return {"scheduleType": "interval_days", "intervalDays": interval_days}
+        if choice == "3":
+            month_days = _input_month_days("请输入每月兑换日期（如 1,15,28,-1）: ")
+            return {"scheduleType": "monthly_days", "monthlyDays": month_days}
+        print("[-] 请输入 1、2 或 3。")
+
+
+def should_redeem_today(config: dict, today: datetime.date) -> tuple[bool, str]:
+    schedule_type = str(config.get("scheduleType") or "daily").strip()
+    last_redeem_date = str(config.get("lastRedeemDate") or "").strip()
+    today_str = today.isoformat()
+
+    if last_redeem_date == today_str:
+        return False, f"今天({today_str})已兑换过，跳过。"
+
+    if schedule_type == "daily":
+        return True, "每日兑换策略，允许执行。"
+
+    if schedule_type == "interval_days":
+        interval_days = int(config.get("intervalDays", 1) or 1)
+        if interval_days < 1:
+            interval_days = 1
+        if not last_redeem_date:
+            return True, "间隔兑换策略首次执行。"
+        try:
+            last_day = datetime.date.fromisoformat(last_redeem_date)
+        except ValueError:
+            return True, "上次兑换日期格式异常，允许执行。"
+        passed_days = (today - last_day).days
+        if passed_days >= interval_days:
+            return True, f"已间隔 {passed_days} 天，满足每隔 {interval_days} 天兑换。"
+        return False, f"距上次仅 {passed_days} 天，未到每隔 {interval_days} 天。"
+
+    if schedule_type == "monthly_days":
+        month_days = config.get("monthlyDays", [])
+        if not isinstance(month_days, list):
+            return False, "每月兑换日期配置错误，跳过。"
+        try:
+            allow_month_end = False
+            allowed_days = set()
+            for day in month_days:
+                day_num = int(day)
+                if day_num == -1:
+                    allow_month_end = True
+                elif 1 <= day_num <= 31:
+                    allowed_days.add(day_num)
+        except Exception:
+            return False, "每月兑换日期配置错误，跳过。"
+        allowed_days = sorted(allowed_days)
+        if not allowed_days and not allow_month_end:
+            return False, "每月兑换日期为空，跳过。"
+        last_day = calendar.monthrange(today.year, today.month)[1]
+        if allow_month_end and today.day == last_day:
+            return True, f"今天是 {today.day} 号（本月最后一天），命中每月兑换日。"
+        if today.day in allowed_days:
+            return True, f"今天是 {today.day} 号，命中每月兑换日。"
+        display_days = [*allowed_days]
+        if allow_month_end:
+            display_days.append(-1)
+        return False, f"今天是 {today.day} 号，不在每月兑换日 {display_days} 中。"
+
+    return True, "未知策略，按每日策略执行。"
+
+
+def prompt_and_create_redeem_config(
+    page: ChromiumPage, headers: Dict[str, str], running_in_docker: bool
+) -> dict:
+    if not sys.stdin.isatty():
+        print("[*] 检测到后台启动模式，跳过兑换配置交互。")
+        print(
+            "[*] 如需配置兑换，请在容器内手动执行: python3 /app/pc_login.py --config-redeem"
+        )
+        return {}
+
+    while True:
+        print("\n\n=== 自动兑换配置 ===")
+        enable_input = input("是否启用自动兑换奖励? [Y/n]: ").strip().lower()
+        if enable_input in ("", "y", "yes"):
+            enable_redeem = True
+            break
+        if enable_input in ("n", "no"):
+            enable_redeem = False
+            break
+        print("[-] 请输入 y 或 n。")
+
+    if not enable_redeem:
+        disabled_config = {"enabled": False}
+        save_redeem_config(get_redeem_config_path(running_in_docker), disabled_config)
+        print("[*] 已设置为不启用自动兑换。")
+        return disabled_config
+
+    desktops = parse_desktops_from_session(page)
+    if not desktops:
+        print("[!] sessionStorage 未读取到 desktops，无法配置自动兑换。")
+        return {}
+
+    rewards = fetch_redeemable_rewards(headers)
+    if not rewards:
+        print("[!] 未获取到可兑换奖励，无法配置自动兑换。")
+        return {}
+
+    print("\n=== 自动兑换配置（首次）===")
+    print("可选设备：")
+    for idx, item in enumerate(desktops, start=1):
+        print(
+            f"{idx}. {item.get('objName', '未知设备')} "
+            f"(desktopId={item.get('desktopId', '')})"
+        )
+    desktop_idx = _input_index(len(desktops), "请选择设备序号: ")
+    desktop = desktops[desktop_idx]
+
+    print("\n可选奖励：")
+    for idx, reward in enumerate(rewards, start=1):
+        print(
+            f"{idx}. {reward['prodName']} {reward['costPoints']}积分 (prodId={reward['prodId']}, "
+            f"prodType={reward['prodType']})"
+        )
+    reward_idx = _input_index(len(rewards), "请选择奖励序号: ")
+    reward = rewards[reward_idx]
+
+    print("\n兑换次数设置：")
+    max_redeem_times = _input_non_negative_int(
+        "每次挂机完成最多兑换次数 [默认0=按积分尽量兑换]: ", 0
+    )
+    schedule_config = prompt_redeem_schedule()
+
+    config = {
+        "enabled": True,
+        "desktopId": str(desktop.get("desktopId", "")).strip(),
+        "prodId": int(reward["prodId"]),
+        "prodName": reward["prodName"],
+        "prodType": reward["prodType"],
+        "costPoints": int(reward["costPoints"]),
+        "maxRedeemTimes": int(max_redeem_times),
+        "lastRedeemDate": "",
+    }
+    config.update(schedule_config)
+    save_redeem_config(get_redeem_config_path(running_in_docker), config)
+    return config
+
+
+def ensure_redeem_config(
+    page: ChromiumPage,
+    headers: Dict[str, str],
+    running_in_docker: bool,
+    config_redeem_only: bool = False,
+) -> dict:
+    path = get_redeem_config_path(running_in_docker)
+    config = load_redeem_config(path)
+    if config_redeem_only and config:
+        file_path = Path(path)
+        file_path.unlink()
+        return prompt_and_create_redeem_config(page, headers, running_in_docker)
+    if config and "enabled" in config:
+        return config
+    return prompt_and_create_redeem_config(page, headers, running_in_docker)
+
+
+def build_place_order_payload(
+    sku_prod_id: int, desktop_id: int, prod_type: str, cost_points: int, times: int
+) -> dict:
+    return {
+        "busiChannel": "010",
+        "orderType": 1,
+        "pointType": 1,
+        "points": int(cost_points) * int(times),
+        "sku": [
+            {
+                "execSort": idx + 1,
+                "prodId": int(sku_prod_id),
+                "prodType": prod_type,
+                "attrs": [{"attrKey": "bindDesktopId", "attrVal": int(desktop_id)}],
+            }
+            for idx in range(times)
+        ],
+    }
+
+
+def try_redeem_reward_once(
+    headers: Dict[str, str], payload: dict, times: int, cost_points: int
+) -> bool:
+    try:
+        response = requests.post(
+            PLACE_ORDER_URL, json=payload, headers=headers, timeout=20
+        )
+        data = response.json()
+    except Exception as e:
+        print(f"[!] 兑换请求失败: {e}")
+        return False
+
+    code = data.get("code")
+    if code == 0:
+        print(f"[*] 兑换成功：本次兑换 {times} 次，共消耗 {times * cost_points} 积分。")
+        return True
+    if code == 40010:
+        print("[!] 兑换失败：当前登录信息已过期，请重新登录。")
+        return False
+    if code == 30010:
+        print("[!] 兑换失败：资源施工中，请稍后再试。")
+        return False
+    print(f"[!] 兑换失败：code={code}, msg={data.get('msg', '未知错误')}")
+    return False
+
+
+def auto_redeem_reward_after_hang(
+    page: ChromiumPage,
+    request_headers: Dict[str, str],
+    running_in_docker: bool,
+    current_points: int,
+) -> None:
+    headers = clean_headers(request_headers)
+    config_path = get_redeem_config_path(running_in_docker)
+    config = ensure_redeem_config(page, headers, running_in_docker)
+    if not config:
+        return
+
+    try:
+        enabled = config.get("enabled")
+        if not enabled:
+            print("[*] 自动兑换配置已禁用，跳过。")
+            return
+        desktop_id = int(str(config.get("desktopId", "")).strip())
+        prod_id = int(config.get("prodId"))
+        prod_type = str(config.get("prodType", "")).strip()
+        cost_points = int(config.get("costPoints", 0))
+        max_redeem_times = int(config.get("maxRedeemTimes", 1))
+        prod_name = str(config.get("prodName", "")).strip()
+    except Exception:
+        print("[!] 自动兑换配置格式错误，跳过。")
+        return
+
+    if cost_points <= 0:
+        print("[!] 配置中的 costPoints 异常，跳过兑换。")
+        return
+
+    today = datetime.date.today()
+    can_redeem_today, reason = should_redeem_today(config, today)
+    if not can_redeem_today:
+        print(f"[*] 兑换计划未执行：{reason}")
+        return
+    print(f"[*] 兑换计划命中：{reason}")
+
+    if current_points > 0:
+        can_redeem_times = current_points // cost_points
+        if can_redeem_times <= 0:
+            print(
+                f"[*] 当前积分 {current_points} 小于单次兑换所需 {cost_points}，本次不兑换。"
+            )
+            return
+        final_times = (
+            can_redeem_times
+            if max_redeem_times == 0
+            else min(can_redeem_times, max_redeem_times)
+        )
+    else:
+        final_times = 1 if max_redeem_times == 0 else max_redeem_times
+        print("[!] 当前积分读取失败，按配置次数降级尝试兑换。")
+
+    print(
+        f"[*] 准备自动兑换({prod_name})：prodId={prod_id}, desktopId={desktop_id}, "
+        f"prodType={prod_type}, costPoints={cost_points}, 尝试={final_times}次。"
+    )
+    restart_at = int(time.time()) + 120
+    attempt_times = final_times
+    while attempt_times > 0:
+        payload = build_place_order_payload(
+            prod_id, desktop_id, prod_type, cost_points, attempt_times
+        )
+        if try_redeem_reward_once(headers, payload, attempt_times, cost_points):
+            config["lastRedeemDate"] = today.isoformat()
+            save_redeem_config(config_path, config)
+            if running_in_docker:
+                try:
+                    with open(RESTART_AT_FILE, "w", encoding="utf-8") as f:
+                        f.write(str(restart_at))
+                    print("[*] 已设置 CtYun.dll 在 2 分钟后自动重启。")
+                except Exception as e:
+                    print(f"[!] 写入重启计划失败: {e}")
+            return
+        attempt_times -= 1
+
+    print("[!] 自动兑换未成功，可稍后重试。")
 
 
 def execute_login(
@@ -624,7 +1107,17 @@ def get_bytes_numeric_captcha(image_bytes: bytes) -> str:
     return solver.solve(image_bytes)
 
 
-def main() -> None:
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="天翼云电脑挂机与积分兑换脚本")
+    parser.add_argument(
+        "--config-redeem",
+        action="store_true",
+        help="仅执行兑换配置交互，不进入挂机流程",
+    )
+    return parser.parse_args()
+
+
+def main(config_redeem_only: bool = False) -> None:
     username = os.getenv("APP_USER")
     password = os.getenv("APP_PASSWORD")
     running_in_docker = os.getenv("RUNNING_IN_DOCKER") == "true"
@@ -716,7 +1209,12 @@ def main() -> None:
         else:
             print("[-] 登录成功，但未能读取 authData.mobilephone。")
 
-        wait_for_points_with_points(page, HANG_SECONDS)
+        wait_for_points_with_points(
+            page,
+            HANG_SECONDS,
+            running_in_docker=running_in_docker,
+            config_redeem_only=config_redeem_only,
+        )
         page.quit()
 
     except Exception as e:
@@ -735,5 +1233,6 @@ def save_screenshot(page: ChromiumPage) -> None:
 
 
 if __name__ == "__main__":
+    args = parse_args()
     print("[*] 开始进行云电脑挂机")
-    main()
+    main(config_redeem_only=args.config_redeem)

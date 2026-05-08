@@ -131,6 +131,10 @@ if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" =
     echo -e "${GREEN}[*] 容器后台运行正常。${NC}"
 
     echo -e "------------------------------------------------------"
+    echo -e "${YELLOW}[*] 配置首次兑换策略...${NC}"
+    docker exec -it "$CONTAINER_NAME" python3 /app/pc_login.py --config-redeem
+
+    echo -e "------------------------------------------------------"
     echo -e "${YELLOW}[*] 执行AI对话积分任务...${NC}"
     docker exec -it "$CONTAINER_NAME" python3 /app/login_script.py
 
@@ -154,5 +158,6 @@ fi
 echo -e "\n${GREEN}[*] 部署与首次配置完成。${NC}"
 echo -e "容器名: ${CONTAINER_NAME}"
 echo -e "数据目录: ${DATA_DIR}"
+echo -e "自动兑换奖励配置: docker exec -it "$CONTAINER_NAME" python3 /app/pc_login.py --config-redeem"
 echo -e "日志查询: ${YELLOW}docker logs -f ${CONTAINER_NAME}${NC}"
 echo -e "启动/停止: ${YELLOW}docker start/stop ${CONTAINER_NAME}${NC}"

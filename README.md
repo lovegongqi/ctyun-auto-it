@@ -1,12 +1,21 @@
-﻿# 天翼云电脑保活并完成每日任务获取积分
+# 天翼云电脑保活并完成每日任务获取积分
 
 本项目用于在 Docker 容器中保活云电脑使其长期开机，保活不会中断使用，并自动完成积分任务，每天可获取300积分。
 
 ## 新版本更新
 
-- **新增挂机任务**
+- **自动兑换奖励**
+- **挂机积分任务**
 - **优化海外卡顿**
 - **定时任务优化**
+
+## 自动兑换奖励
+
+- 支持自动兑换奖励。
+- 每天可获取 `300` 积分。
+- 升级 `8c16g` 配置需要 `300` 积分。
+- 推荐策略：设置每月兑换一次（可使用 `-1` 表示每月最后一天），可长期维持 `8c16g` 配置（长期8c16g状态）。
+
 
 ## 来源说明
 
@@ -21,11 +30,12 @@
 ```text
 .
 ├─ deploy.sh               # 交互式部署脚本（构建镜像、启动容器）
+├─ deploy_cron.sh          # 带 cron 参数的部署脚本（可配置定时任务）
 └─ app/
    ├─ Dockerfile           # 运行环境构建与 cron 任务配置
    ├─ entrypoint.sh        # 容器入口：启动 cron + 保活循环运行 CtYun.dll
    ├─ login_script.py      # AI对话积分任务脚本
-   └─ pc_login.py          # 云电脑挂机任务脚本
+   └─ pc_login.py          # 云电脑挂机任务 + 自动兑换脚本
 ```
 ## 快速开始
 
@@ -60,6 +70,9 @@ docker logs -f ctyun_sign_<APP_USER>
 # 停止/启动容器
 docker stop ctyun_sign_<APP_USER>
 docker start ctyun_sign_<APP_USER>
+
+# 自动兑换奖励配置
+docker exec -it ctyun_sign_<APP_USER> python3 /app/pc_login.py --config-redeem
 ```
 
 验证码识别api方案来自 https://github.com/sml2h3/ddddocr

@@ -23,7 +23,7 @@ print_usage() {
   bash deploy_cron.sh [账号] [密码] [挂机cron] [AI对话cron] [选项]
 
 选项:
-  -y, --yes                     跳过“按回车启动容器”确认
+  -y, --yes                     跳过设备验证以及积分自动兑换奖励配置、首次积分获取。
   -h, --help                    显示帮助
 
 示例:
@@ -75,19 +75,17 @@ EOF
     echo -e "    AI对话任务任务: ${login_cron}"
 }
 
-run_pc_login_until_warm_then_background() {
+run_pc_login_until_hang_then_background() {
     local container_name="$1"
-    local pc_script="$2"
     local log_file="/app/data/pc_login_once.log"
     local pid_file="/app/data/pc_login_once.pid"
     local max_wait_seconds=900
-    local warmup_seconds=120
     local waited_seconds=0
     local printed_lines=0
 
-    echo -e "${YELLOW}[*] 正在启动云电脑挂机任务...${NC}"
+    echo -e "${YELLOW}[*] 启动云电脑一小时使用积分任务...${NC}"
 
-    docker exec "$container_name" sh -c "rm -f '$log_file' '$pid_file'; nohup env PYTHONUNBUFFERED=1 python3 -u '$pc_script' > '$log_file' 2>&1 & echo \$! > '$pid_file'"
+    docker exec "$container_name" sh -c "rm -f '$log_file' '$pid_file'; nohup env PYTHONUNBUFFERED=1 python3 -u /app/pc_login.py > '$log_file' 2>&1 & echo \$! > '$pid_file'"
 
     while true; do
         local new_lines
@@ -100,21 +98,22 @@ run_pc_login_until_warm_then_background() {
             done <<< "$new_lines"
         fi
 
+        if docker exec "$container_name" sh -c "grep -aEq '挂机剩余' '$log_file'"; then
+            echo -e "${GREEN}[*] 已检测到挂机阶段，已转后台继续运行。${NC}"
+            return 0
+        fi
+
         if ! docker exec "$container_name" sh -c "[ -f '$pid_file' ] && kill -0 \$(cat '$pid_file') 2>/dev/null"; then
-            echo -e "${RED}[!] 任务提前退出。${NC}"
+            echo -e "${RED}[!] 任务已提前退出${NC}"
+            echo -e "${YELLOW}[*] 最近日志如下：${NC}"
+            docker exec "$container_name" sh -c "tail -n 30 '$log_file' 2>/dev/null || true"
             return 1
         fi
 
         sleep 2
         waited_seconds=$((waited_seconds + 2))
-
-        if [ "$waited_seconds" -ge "$warmup_seconds" ]; then
-            echo -e "${GREEN}[*] 后台任务运行正常。${NC}"
-            return 0
-        fi
-
         if [ "$waited_seconds" -ge "$max_wait_seconds" ]; then
-            echo -e "${YELLOW}[!] 等待超时，任务将继续在后台运行。${NC}"
+            echo -e "${YELLOW}[!] 等待超过 $((max_wait_seconds / 60)) 分钟，未检测到挂机提示。继续后台运行。${NC}"
             return 0
         fi
     done
@@ -270,17 +269,26 @@ if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" =
 
     configure_cron_in_container "$CONTAINER_NAME" "$LOGIN_CRON_EXPR" "$PC_CRON_EXPR" "$LOGIN_SCRIPT" "$PC_SCRIPT"
 
-    echo -e "------------------------------------------------------"
-    echo -e "${YELLOW}[*] 执行AI 对话积分任务...${NC}"
-    docker exec -it "$CONTAINER_NAME" python3 "$LOGIN_SCRIPT"
+    if [ "$AUTO_CONFIRM" != 'true' ]; then
+        echo -e "------------------------------------------------------"
+        echo -e "${YELLOW}[*] 配置首次兑换策略...${NC}"
+        docker exec -it "$CONTAINER_NAME" python3 /app/pc_login.py --config-redeem
 
-    echo -e "------------------------------------------------------"
-    if ! run_pc_login_until_warm_then_background "$CONTAINER_NAME" "$PC_SCRIPT"; then
-        echo -e "${YELLOW}[!] 挂机任务未进入稳定运行阶段，请稍后查看日志。${NC}"
+        echo -e "------------------------------------------------------"
+        echo -e "${YELLOW}[*] 执行AI 对话积分任务...${NC}"
+        docker exec -it "$CONTAINER_NAME" python3 "$LOGIN_SCRIPT"
+
+        echo -e "------------------------------------------------------"
+        if ! run_pc_login_until_hang_then_background "$CONTAINER_NAME"; then
+            echo -e "${YELLOW}[!] 未进入挂机阶段，请稍后查看容器日志排查。${NC}"
+        fi
+        echo -e "------------------------------------------------------"
+
+        echo -e "${GREEN}[*] 首次任务触发完成，后续由 Cron 按计划执行。${NC}"
+    else
+        echo -e "${GREEN}[*] 跳过首次运行，后续由 Cron 按计划执行。${NC}"
+        echo -e "${GREEN}[*] 如需配置兑换，请手动执行: docker exec -it "$CONTAINER_NAME" python3 /app/pc_login.py --config-redeem${NC}"
     fi
-    echo -e "------------------------------------------------------"
-
-    echo -e "${GREEN}[*] 首次任务触发完成，后续由 Cron 按计划执行。${NC}"
 else
     echo -e "${RED}[!] 警告：容器当前未运行。${NC}"
     echo -e "可执行恢复命令：docker start ${CONTAINER_NAME}"
@@ -292,6 +300,7 @@ fi
 echo -e "\n${GREEN}[*] 部署完成。${NC}"
 echo -e "容器名：${CONTAINER_NAME}"
 echo -e "数据目录：${DATA_DIR}"
+echo -e "自动兑换奖励配置: docker exec -it "$CONTAINER_NAME" python3 /app/pc_login.py --config-redeem"
 echo -e "日志查看：docker logs -f ${CONTAINER_NAME}"
 echo -e "启停命令：docker start/stop ${CONTAINER_NAME}"
 echo -e "查看定时任务：docker exec -it ${CONTAINER_NAME} crontab -l"
