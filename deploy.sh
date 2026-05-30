@@ -56,27 +56,16 @@ echo -e "${YELLOW}[*] 正在构建镜像...${NC}"
 docker build -q -t ctyun-auto-sign:v1 ./app
 
 CONTAINER_NAME="ctyun_sign_${APP_USER}"
+
+# 4. 删除旧容器（如果存在）
 if [ "$(docker ps -aq -f name=^${CONTAINER_NAME}$)" ]; then
+    echo -e "${YELLOW}[*] 删除旧容器...${NC}"
     docker rm -f "$CONTAINER_NAME" > /dev/null
 fi
 
-# 4. 启动容器（交互模式）
-echo ""
-echo -e "${YELLOW}======================================================${NC}"
-echo -e "${YELLOW}  容器已启动，进入手动登录模式${NC}"
-echo -e "${YELLOW}======================================================${NC}"
-echo ""
-echo -e "  登录命令: ${GREEN}dotnet CtYun.dll -u $APP_USER -p $APP_PASSWORD${NC}"
-echo ""
-echo -e "  首次登录需要短信验证码，请在终端输入。"
-echo -e "  登录成功后设备会绑定，之后无需再验证。"
-echo ""
-echo -e "  ${YELLOW}保持容器后台运行: Ctrl+P, Ctrl+Q${NC}"
-echo -e "  ${YELLOW}退出终端: exit${NC}"
-echo -e "${YELLOW}======================================================${NC}"
-echo ""
-
-docker run -it \
+# 5. 创建容器（不启动）
+echo -e "${YELLOW}[*] 正在创建容器...${NC}"
+docker create \
   --name "$CONTAINER_NAME" \
   -e APP_USER="$APP_USER" \
   -e APP_PASSWORD="$APP_PASSWORD" \
@@ -87,9 +76,21 @@ docker run -it \
   ctyun-auto-sign:v1
 
 echo ""
-echo -e "${GREEN}[*] 部署完成！${NC}"
+echo -e "${GREEN}[*] 容器创建成功！${NC}"
+echo ""
+echo -e "${YELLOW}======================================================${NC}"
+echo -e "${YELLOW}  下一步操作：${NC}"
+echo -e "${YELLOW}======================================================${NC}"
+echo ""
+echo -e "  1. 进入容器终端："
+echo -e "     ${GREEN}docker exec -it ${CONTAINER_NAME} /bin/bash${NC}"
+echo ""
+echo -e "  2. 在容器内执行登录命令："
+echo -e "     ${GREEN}dotnet CtYun.dll -u ${APP_USER} -p ${APP_PASSWORD}${NC}"
+echo ""
+echo -e "  首次登录需要短信验证码，输入后回车即可。"
+echo -e "  登录成功后设备会绑定，之后无需再验证。"
+echo -e "${YELLOW}======================================================${NC}"
+echo ""
 echo -e "容器名: ${CONTAINER_NAME}"
 echo -e "数据目录: ${DATA_DIR}"
-echo -e ""
-echo -e "后续登录命令: ${YELLOW}docker exec -it ${CONTAINER_NAME} dotnet /app/CtYun.dll -u ${APP_USER} -p ${APP_PASSWORD}${NC}"
-echo -e "查看日志: ${YELLOW}docker logs -f ${CONTAINER_NAME}${NC}"
