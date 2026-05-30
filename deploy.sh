@@ -63,9 +63,9 @@ if [ "$(docker ps -aq -f name=^${CONTAINER_NAME}$)" ]; then
     docker rm -f "$CONTAINER_NAME" > /dev/null
 fi
 
-# 5. 创建容器（不启动）
-echo -e "${YELLOW}[*] 正在创建容器...${NC}"
-docker create \
+# 5. 创建并启动容器
+echo -e "${YELLOW}[*] 正在创建并启动容器...${NC}"
+docker run -d \
   --name "$CONTAINER_NAME" \
   -e APP_USER="$APP_USER" \
   -e APP_PASSWORD="$APP_PASSWORD" \
@@ -76,7 +76,7 @@ docker create \
   ctyun-auto-sign:v1
 
 echo ""
-echo -e "${GREEN}[*] 容器创建成功！${NC}"
+echo -e "${GREEN}[*] 容器启动成功！${NC}"
 echo ""
 echo -e "${YELLOW}======================================================${NC}"
 echo -e "${YELLOW}  下一步操作：${NC}"
@@ -86,11 +86,12 @@ echo -e "  1. 进入容器终端："
 echo -e "     ${GREEN}docker exec -it ${CONTAINER_NAME} /bin/bash${NC}"
 echo ""
 echo -e "  2. 在容器内执行登录命令："
-echo -e "     ${GREEN}dotnet CtYun.dll -u ${APP_USER} -p ${APP_PASSWORD}${NC}"
+echo -e "     ${GREEN}dotnet /app/CtYun.dll -u ${APP_USER} -p ${APP_PASSWORD}${NC}"
 echo ""
 echo -e "  首次登录需要短信验证码，输入后回车即可。"
-echo -e "  登录成功后设备会绑定，之后无需再验证。"
 echo -e "${YELLOW}======================================================${NC}"
 echo ""
 echo -e "容器名: ${CONTAINER_NAME}"
 echo -e "数据目录: ${DATA_DIR}"
+echo ""
+echo -e "查看日志: ${YELLOW}docker logs -f ${CONTAINER_NAME}${NC}"
