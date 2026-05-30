@@ -1,20 +1,18 @@
 #!/bin/bash
 set -e
 
-DEVICECODE_FILE="/app/data/.devicecode_${APP_USER}"
-RESTART_AT_FILE="/tmp/ctyun_restart_at"
+DEVICECODE_FILE="/app/data/.devicecode_$APP_USER"
 
-if [ -z "$DEVICECODE" ]; then
-    if [ -f "$DEVICECODE_FILE" ]; then
-        export DEVICECODE=$(cat "$DEVICECODE_FILE")
-        echo "[*] 读取到已保存的 DEVICECODE: $DEVICECODE"
-    else
-        export DEVICECODE="web_$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)"
-        echo "$DEVICECODE" > "$DEVICECODE_FILE"
-        echo "[*] 首次启动，已生成并持久化 DEVICECODE: $DEVICECODE"
-    fi
-else
-    echo "[*] 检测到手动传入的 DEVICECODE: $DEVICECODE"
+if [ ! -f "$DEVICECODE_FILE" ]; then
+    export DEVICECODE="web_$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)"
+    echo "$DEVICECODE" > "$DEVICECODE_FILE"
+fi
+
+export DEVICECODE=$(cat "$DEVICECODE_FILE")
+echo "[*] DEVICECODE: $DEVICECODE"
+
+if [ ! -f "/etc/timezone" ]; then
+    ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/timezone
 fi
 
 env >> /etc/environment
@@ -22,76 +20,21 @@ env >> /etc/environment
 service cron start
 echo "[*] Cron 定时服务已启动。"
 
-set +e
+echo ""
+echo "======================================================"
+echo "  欢迎使用天翼云电脑手动登录模式"
+echo "======================================================"
+echo ""
+echo "  手动登录命令:"
+echo "    dotnet CtYun.dll -u $APP_USER -p $APP_PASSWORD"
+echo ""
+echo "  首次登录需要短信验证码，请在终端输入。"
+echo "  登录成功后设备会绑定，之后无需再验证。"
+echo ""
+echo "  保持容器运行命令 (后台挂起): Ctrl+P, Ctrl+Q"
+echo "  退出容器: exit"
+echo "======================================================"
+echo ""
 
-echo "[*] 启动进程守护模式..."
-
-should_restart_ctyun_now() {
-    if [ ! -f "$RESTART_AT_FILE" ]; then
-        return 1
-    fi
-
-    local restart_at
-    restart_at=$(tr -d '[:space:]' < "$RESTART_AT_FILE" 2>/dev/null)
-    if ! [[ "$restart_at" =~ ^[0-9]+$ ]]; then
-        echo "[!] 检测到无效的重启计划文件，已忽略并清理。"
-        rm -f "$RESTART_AT_FILE"
-        return 1
-    fi
-
-    local now
-    now=$(date +%s)
-    [ "$now" -ge "$restart_at" ]
-}
-
-run_ctyun_with_watch() {
-    local duration="$1"
-    local scheduled_restart=0
-
-    timeout --foreground "$duration" dotnet CtYun.dll &
-    local timeout_pid=$!
-
-    while kill -0 "$timeout_pid" 2>/dev/null; do
-        if should_restart_ctyun_now; then
-            echo "[*] 检测到兑换成功后的重启计划已到时，准备重启 CtYun.dll。"
-            scheduled_restart=1
-            rm -f "$RESTART_AT_FILE"
-            kill "$timeout_pid" 2>/dev/null || true
-            sleep 1
-            pkill -f "dotnet CtYun.dll" 2>/dev/null || true
-            break
-        fi
-        sleep 2
-    done
-
-    wait "$timeout_pid"
-    local exit_code=$?
-    if [ "$scheduled_restart" -eq 1 ]; then
-        return 200
-    fi
-    return "$exit_code"
-}
-
-# 开启无限循环，接管程序的生命周期
-while true; do
-    echo "======================================================"
-    echo "[*] 启动 CtYun.dll..."
-    run_ctyun_with_watch 2m
-    sleep 10
-    run_ctyun_with_watch 24h
-
-    # 获取上方进程退出时的状态码
-    EXIT_CODE=$?
-
-    if [ $EXIT_CODE -eq 200 ]; then
-        echo "[*] 已按兑换计划完成重启。"
-    elif [ $EXIT_CODE -eq 124 ]; then
-        echo "[!] 触发定时机制：程序已连续运行 24 小时，执行强制重启。"
-    else
-        echo "[!] CtYun.dll 进程已退出 (退出码: $EXIT_CODE)。可能正在等待开机或发生了异常。"
-    fi
-
-    echo "[*] 容器挂起中，将在 2 分钟 (120秒) 后重新启动程序，请等待..."
-    sleep 120
-
-done
+# 保持容器运行
+tail -f /dev/null
