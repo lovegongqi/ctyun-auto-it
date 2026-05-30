@@ -16,7 +16,7 @@ ctyun-auto/
 ## 快速开始
 
 ```bash
-git clone https://github.com/liuzhijie443/ctyun-auto.git
+git clone https://github.com/lovegongqi/ctyun-auto-it.git
 cd ctyun-auto/
 bash deploy.sh
 ```
