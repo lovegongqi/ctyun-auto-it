@@ -7,7 +7,6 @@ if [ -n "$APP_USER" ] && [ ! -f "$DEVICECODE_FILE" ]; then
     echo "$NEW_DEVICECODE" > "$DEVICECODE_FILE"
 fi
 
-# 如果有设备码文件，读取并导出
 if [ -f "$DEVICECODE_FILE" ]; then
     export DEVICECODE=$(cat "$DEVICECODE_FILE")
     echo "[*] DEVICECODE: $DEVICECODE"
@@ -28,5 +27,5 @@ echo "  保持后台运行: Ctrl+P, Ctrl+Q"
 echo "=========================================="
 echo ""
 
-# 等待用户输入命令
-/bin/bash
+# 保持容器运行
+tail -f /dev/null
