@@ -25,16 +25,15 @@ echo "======================================================"
 echo "  欢迎使用天翼云电脑手动登录模式"
 echo "======================================================"
 echo ""
-echo "  手动登录命令:"
-echo "    dotnet CtYun.dll -u $APP_USER -p $APP_PASSWORD"
+echo "  登录命令: dotnet CtYun.dll -u $APP_USER -p $APP_PASSWORD"
 echo ""
 echo "  首次登录需要短信验证码，请在终端输入。"
 echo "  登录成功后设备会绑定，之后无需再验证。"
 echo ""
-echo "  保持容器运行命令 (后台挂起): Ctrl+P, Ctrl+Q"
+echo "  保持容器后台运行: Ctrl+P, Ctrl+Q"
 echo "  退出容器: exit"
 echo "======================================================"
 echo ""
 
-# 保持容器运行
-tail -f /dev/null
+# 启动交互式 bash，让用户可以直接输入命令并看到输出
+exec /bin/bash
